@@ -11,6 +11,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -20,7 +21,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -38,7 +38,12 @@ public class ProductService {
     public void saveProductsFromCsv(MultipartFile file) {
         try (BufferedReader fileReader = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8));
              CSVParser csvParser = new CSVParser(fileReader,
-                     CSVFormat.DEFAULT.withFirstRecordAsHeader().withIgnoreHeaderCase().withTrim())) {
+                     CSVFormat.Builder.create(CSVFormat.DEFAULT)
+                             .setHeader()
+                             .setSkipHeaderRecord(true)
+                             .setIgnoreHeaderCase(true)
+                             .setTrim(true)
+                             .build())) {
 
             List<Product> products = new ArrayList<>();
             Iterable<CSVRecord> csvRecords = csvParser.getRecords();
@@ -69,7 +74,7 @@ public class ProductService {
         try (InputStream inputStream = file.getInputStream();
              Workbook workbook = new XSSFWorkbook(inputStream)) {
 
-            Map<String, Map<String, String>> fullMetadata = objectMapper.readValue(metadataJson, Map.class);
+            Map<String, Map<String, String>> fullMetadata = objectMapper.readValue(metadataJson, new TypeReference<>() {});
             Map<String, String> productMetadata = fullMetadata.get("Product");
             
             if (productMetadata == null) {
@@ -110,9 +115,13 @@ public class ProductService {
                         continue;
                     }
 
-                    Product product = new Product();
+                    Long productId = getLongValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "productId"));
+                    if (productId == null) {
+                        continue; // Skip if productId is null
+                    }
                     
-                    product.setProductId(getLongValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "productId")));
+                    Product product = new Product();
+                    product.setProductId(productId);
                     product.setGearName(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "gearName")));
                     product.setBrand(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "brand")));
                     product.setCategories(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "categories")));
@@ -174,16 +183,12 @@ public class ProductService {
         Cell cell = getCell(sheet, rowIndex, colIndex);
         if (cell == null) return null;
 
-        switch (cell.getCellType()) {
-            case STRING:
-                return cell.getStringCellValue();
-            case NUMERIC:
-                return String.valueOf(cell.getNumericCellValue());
-            case BOOLEAN:
-                return String.valueOf(cell.getBooleanCellValue());
-            default:
-                return "";
-        }
+        return switch (cell.getCellType()) {
+            case STRING -> cell.getStringCellValue();
+            case NUMERIC -> String.valueOf(cell.getNumericCellValue());
+            case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
+            default -> "";
+        };
     }
 
     private Long getLongValue(Sheet sheet, int rowIndex, Integer colIndex) {
