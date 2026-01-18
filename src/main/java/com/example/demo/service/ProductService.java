@@ -10,6 +10,7 @@ import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -18,15 +19,20 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final ObjectMapper objectMapper;
 
-    public ProductService(ProductRepository productRepository) {
+    public ProductService(ProductRepository productRepository, ObjectMapper objectMapper) {
         this.productRepository = productRepository;
+        this.objectMapper = objectMapper;
     }
 
     public void saveProductsFromCsv(MultipartFile file) {
@@ -59,21 +65,44 @@ public class ProductService {
         }
     }
 
-    public void saveProductsFromExcel(MultipartFile file) {
+    public void saveProductsFromExcel(MultipartFile file, String metadataJson) {
         try (InputStream inputStream = file.getInputStream();
              Workbook workbook = new XSSFWorkbook(inputStream)) {
+
+            Map<String, Map<String, String>> fullMetadata = objectMapper.readValue(metadataJson, Map.class);
+            Map<String, String> productMetadata = fullMetadata.get("Product");
+            
+            if (productMetadata == null) {
+                throw new RuntimeException("Metadata for 'Product' not found");
+            }
+
+            String targetSheetName = productMetadata.get("sheet");
+            Map<String, Integer> columnMapping = new HashMap<>();
 
             List<Product> products = new ArrayList<>();
 
             for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
                 Sheet sheet = workbook.getSheetAt(i);
+                
+                // If sheet name is specified in metadata, only process that sheet
+                if (targetSheetName != null && !targetSheetName.equalsIgnoreCase(sheet.getSheetName())) {
+                    continue;
+                }
 
-                // Skip if sheet is empty
                 if (sheet.getPhysicalNumberOfRows() == 0) {
                     continue;
                 }
 
-                // Iterate from row 1 (skipping header at row 0)
+                // Read header row to map columns
+                Row headerRow = sheet.getRow(0);
+                if (headerRow == null) continue;
+
+                columnMapping.clear();
+                for (Cell cell : headerRow) {
+                    columnMapping.put(cell.getStringCellValue().trim(), cell.getColumnIndex());
+                }
+
+                // Iterate from row 1
                 for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
                     Row currentRow = sheet.getRow(rowIndex);
 
@@ -82,19 +111,17 @@ public class ProductService {
                     }
 
                     Product product = new Product();
-                    // product_id (0), gear_name (1), brand (2), categories (3), sub_categories (4),
-                    // color (5), price (6), num_images (7), short_description (8), description (9)
-
-                    product.setProductId(getLongValue(sheet, rowIndex, 0));
-                    product.setGearName(getStringValue(sheet, rowIndex, 1));
-                    product.setBrand(getStringValue(sheet, rowIndex, 2));
-                    product.setCategories(getStringValue(sheet, rowIndex, 3));
-                    product.setSubCategories(getStringValue(sheet, rowIndex, 4));
-                    product.setColor(getStringValue(sheet, rowIndex, 5));
-                    product.setPrice(getBigDecimalValue(sheet, rowIndex, 6));
-                    product.setNumImages(getIntegerValue(sheet, rowIndex, 7));
-                    product.setShortDescription(getStringValue(sheet, rowIndex, 8));
-                    product.setDescription(getStringValue(sheet, rowIndex, 9));
+                    
+                    product.setProductId(getLongValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "productId")));
+                    product.setGearName(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "gearName")));
+                    product.setBrand(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "brand")));
+                    product.setCategories(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "categories")));
+                    product.setSubCategories(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "subCategories")));
+                    product.setColor(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "color")));
+                    product.setPrice(getBigDecimalValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "price")));
+                    product.setNumImages(getIntegerValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "numImages")));
+                    product.setShortDescription(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "shortDescription")));
+                    product.setDescription(getStringValue(sheet, rowIndex, getColumnIndex(columnMapping, productMetadata, "description")));
 
                     products.add(product);
                 }
@@ -103,8 +130,14 @@ public class ProductService {
             productRepository.saveAll(products);
 
         } catch (IOException e) {
-            throw new RuntimeException("fail to parse Excel file: " + e.getMessage());
+            throw new RuntimeException("fail to parse Excel file or metadata: " + e.getMessage());
         }
+    }
+
+    private Integer getColumnIndex(Map<String, Integer> columnMapping, Map<String, String> metadata, String fieldName) {
+        String excelHeaderName = metadata.get(fieldName);
+        if (excelHeaderName == null) return null;
+        return columnMapping.get(excelHeaderName);
     }
 
     private boolean isRowEmpty(Row row) {
@@ -119,7 +152,9 @@ public class ProductService {
         return true;
     }
 
-    private Cell getCell(Sheet sheet, int rowIndex, int colIndex) {
+    private Cell getCell(Sheet sheet, int rowIndex, Integer colIndex) {
+        if (colIndex == null) return null;
+        
         // Check if the cell is part of a merged region
         for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
             CellRangeAddress region = sheet.getMergedRegion(i);
@@ -135,19 +170,23 @@ public class ProductService {
         return (row == null) ? null : row.getCell(colIndex);
     }
 
-    private String getStringValue(Sheet sheet, int rowIndex, int colIndex) {
+    private String getStringValue(Sheet sheet, int rowIndex, Integer colIndex) {
         Cell cell = getCell(sheet, rowIndex, colIndex);
         if (cell == null) return null;
 
-        return switch (cell.getCellType()) {
-            case STRING -> cell.getStringCellValue();
-            case NUMERIC -> String.valueOf(cell.getNumericCellValue());
-            case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
-            default -> "";
-        };
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue();
+            case NUMERIC:
+                return String.valueOf(cell.getNumericCellValue());
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            default:
+                return "";
+        }
     }
 
-    private Long getLongValue(Sheet sheet, int rowIndex, int colIndex) {
+    private Long getLongValue(Sheet sheet, int rowIndex, Integer colIndex) {
         Cell cell = getCell(sheet, rowIndex, colIndex);
         if (cell == null) return null;
 
@@ -163,7 +202,7 @@ public class ProductService {
         return null;
     }
 
-    private Integer getIntegerValue(Sheet sheet, int rowIndex, int colIndex) {
+    private Integer getIntegerValue(Sheet sheet, int rowIndex, Integer colIndex) {
         Cell cell = getCell(sheet, rowIndex, colIndex);
         if (cell == null) return null;
 
@@ -179,7 +218,7 @@ public class ProductService {
         return null;
     }
 
-    private BigDecimal getBigDecimalValue(Sheet sheet, int rowIndex, int colIndex) {
+    private BigDecimal getBigDecimalValue(Sheet sheet, int rowIndex, Integer colIndex) {
         Cell cell = getCell(sheet, rowIndex, colIndex);
         if (cell == null) return null;
 

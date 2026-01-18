@@ -22,7 +22,10 @@ public class ProductController {
     }
 
     @PostMapping("/upload")
-    public ResponseEntity<BaseResponse<String>> uploadFile(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<BaseResponse<String>> uploadFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "metadata", required = false) String metadata) {
+        
         if (file.isEmpty()) {
             return ResponseFactory.error(HttpStatus.BAD_REQUEST, "Please upload a file!");
         }
@@ -31,7 +34,10 @@ public class ProductController {
         if (fileName != null && fileName.endsWith(".csv")) {
             productService.saveProductsFromCsv(file);
         } else if (fileName != null && (fileName.endsWith(".xlsx") || fileName.endsWith(".xls"))) {
-            productService.saveProductsFromExcel(file);
+            if (metadata == null || metadata.isEmpty()) {
+                 return ResponseFactory.error(HttpStatus.BAD_REQUEST, "Metadata is required for Excel files!");
+            }
+            productService.saveProductsFromExcel(file, metadata);
         } else {
             return ResponseFactory.error(HttpStatus.BAD_REQUEST, "Please upload a valid CSV or Excel file!");
         }

@@ -1,0 +1,15 @@
+{
+  "Product": {
+    "sheet": "product",
+    "productId": "product_id",
+    "gearName": "gear_name",
+    "brand": "brand",
+    "categories": "categories",
+    "subCategories": "sub_categories",
+    "color": "color",
+    "price": "price",
+    "numImages": "num_images",
+    "shortDescription": "short_description",
+    "description": "description"
+  }
+}
